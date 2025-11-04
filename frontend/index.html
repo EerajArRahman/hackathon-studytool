@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>StudyTool MVP</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>StudyTool</h1>
+    <div class="row">
+      <input id="deckName" placeholder="New deck name" />
+      <button id="createDeckBtn">+ Deck</button>
+      <select id="deckSelect"></select>
+      <input id="tagFilter" placeholder="tag filter (optional)" />
+      <button id="loadNextBtn">Review next</button>
+    </div>
+  </header>
+
+  <main class="grid">
+    <!-- Left: Flashcards -->
+    <section class="pane">
+      <h2>Flashcards</h2>
+      <div class="cardForm">
+        <input id="tag" placeholder="tag (e.g., calculus)" />
+        <textarea id="question" placeholder="Question"></textarea>
+        <textarea id="answer" placeholder="Answer"></textarea>
+        <button id="addCardBtn">+ Add Card</button>
+      </div>
+
+      <div class="review">
+        <h3>Review</h3>
+        <div id="reviewQ" class="box">Click "Review next"</div>
+        <div id="reviewA" class="box answer hidden"></div>
+        <div class="row">
+          <button data-res="again" class="danger">Again</button>
+          <button data-res="good">Good</button>
+          <button data-res="easy" class="success">Easy</button>
+          <button id="showAnswerBtn" class="ghost">Show Answer</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Right: Q-Gen from PDF -->
+    <section class="pane">
+      <h2>PDF → Q&A</h2>
+      <input type="file" id="pdfFile" accept="application/pdf" />
+      <button id="ingestBtn">Generate</button>
+      <div id="qaList"></div>
+    </section>
+
+    <!-- Drawer/Bottom: Reflect -->
+    <section class="pane wide">
+      <h2>Reflect / Spreadsheet View</h2>
+      <div id="stats" class="row"></div>
+      <table id="cardsTable">
+        <thead>
+          <tr><th>Tag</th><th>Question</th><th>Answer</th><th>Last</th><th>Right</th><th>Wrong</th><th>Due</th></tr>
+        </thead>
+        <tbody id="cardsTbody"></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
