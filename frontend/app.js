@@ -1,5 +1,4 @@
-const API = "http://localhost:8000";
-
+const API = "/api";
 const $ = (id) => document.getElementById(id);
 const deckSelect = $("deckSelect");
 
