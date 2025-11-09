@@ -4,3 +4,4 @@ sqlmodel
 pydantic
 pypdf
 google-genai
+python-multipart
