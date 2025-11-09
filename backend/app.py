@@ -1,4 +1,3 @@
-import os
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import SQLModel, Session, create_engine, select
@@ -7,15 +6,14 @@ from typing import List, Optional, Dict
 from pydantic import BaseModel
 from pypdf import PdfReader
 
-from models import Deck, Card, BlogPost, next_due_time
+from models import Deck, Card, next_due_time
 
-# --- DB ---
 DB_URL = "sqlite:///db.sqlite3"
 engine = create_engine(DB_URL, echo=False)
 SQLModel.metadata.create_all(engine)
 
-# --- FastAPI ---
-app = FastAPI(title="StudyTool API", version="0.2")
+app = FastAPI(title="StudyTool API", version="0.1")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True,
@@ -23,6 +21,7 @@ app.add_middleware(
 )
 
 # ---------- Pydantic I/O ----------
+
 class DeckIn(BaseModel):
     name: str
     description: Optional[str] = None
@@ -37,18 +36,8 @@ class ReviewResultIn(BaseModel):
     card_id: int
     result: str  # "again" | "good" | "easy"
 
-class StartSidekickIn(BaseModel):
-    topic: str
+# ---------- Deck routes ----------
 
-class ReplySidekickIn(BaseModel):
-    session_id: str
-    answer: str
-
-class PostIn(BaseModel):
-    title: str
-    content: str
-
-# ---------- Existing routes (unchanged) ----------
 @app.post("/decks", response_model=Deck)
 def create_deck(deck: DeckIn):
     with Session(engine) as sess:
@@ -61,9 +50,12 @@ def list_decks():
     with Session(engine) as sess:
         return sess.exec(select(Deck)).all()
 
+# ---------- Card routes ----------
+
 @app.post("/cards", response_model=Card)
 def create_card(card: CardIn):
     with Session(engine) as sess:
+        # ensure deck exists
         deck = sess.get(Deck, card.deck_id)
         if not deck:
             raise HTTPException(404, "Deck not found")
@@ -82,24 +74,32 @@ def list_cards(deck_id: Optional[int] = None, tag: Optional[str] = None):
             stmt = stmt.where(Card.tag == tag)
         return sess.exec(stmt).all()
 
+# Next card due (by deck + optional tag)
 @app.get("/review/next", response_model=Optional[Card])
 def next_card(deck_id: int, tag: Optional[str] = None):
     with Session(engine) as sess:
         stmt = select(Card).where(Card.deck_id == deck_id)
         if tag:
             stmt = stmt.where(Card.tag == tag)
-        stmt = stmt.where(Card.due_at <= datetime.utcnow()).order_by(Card.due_at)
-        return sess.exec(stmt).first()
+        # due now or earlier
+        stmt = stmt.where(Card.due_at <= datetime.utcnow())
+        stmt = stmt.order_by(Card.due_at)
+        card = sess.exec(stmt).first()
+        return card  # may be None
 
+# Submit a review result
 @app.post("/review/submit", response_model=Card)
 def submit_result(payload: ReviewResultIn):
     result = payload.result
     if result not in {"again", "good", "easy"}:
         raise HTTPException(400, "Invalid result")
+
     with Session(engine) as sess:
         card = sess.get(Card, payload.card_id)
         if not card:
             raise HTTPException(404, "Card not found")
+
+        # simple SRS
         card.last_result = result
         if result == "again":
             card.wrong_count += 1
@@ -109,6 +109,8 @@ def submit_result(payload: ReviewResultIn):
         sess.add(card); sess.commit(); sess.refresh(card)
         return card
 
+# ---------- Reflect (stats) ----------
+
 @app.get("/reflect/stats")
 def reflect(deck_id: Optional[int] = None):
     with Session(engine) as sess:
@@ -116,11 +118,13 @@ def reflect(deck_id: Optional[int] = None):
         if deck_id is not None:
             stmt = stmt.where(Card.deck_id == deck_id)
         cards = sess.exec(stmt).all()
+
     total = len(cards)
     hard = sum(c.wrong_count > c.right_count for c in cards)
     medium = sum(c.wrong_count == c.right_count and (c.right_count + c.wrong_count) > 0 for c in cards)
     easy = sum(c.right_count > c.wrong_count for c in cards)
     never = sum((c.right_count + c.wrong_count) == 0 for c in cards)
+
     return {
         "total": total,
         "buckets": {
@@ -131,14 +135,17 @@ def reflect(deck_id: Optional[int] = None):
         }
     }
 
-# ---------- PDF Q-Gen (unchanged) ----------
+# ---------- PDF Q-Gen (heuristic baseline) ----------
+
 def naive_qgen(text: str, max_q: int = 8):
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    # simple “term: definition” split, or question from long lines
     qa = []
     for ln in lines:
         if ":" in ln and len(qa) < max_q:
             term, definition = ln.split(":", 1)
-            qa.append({"q": f"What is {term.strip()}?", "a": definition.strip()})
+            qa.append({"q": f"What is {term.strip()}?",
+                       "a": definition.strip()})
         elif len(ln.split()) > 7 and len(qa) < max_q:
             words = ln.split()
             head = " ".join(words[:6])
@@ -155,65 +162,95 @@ async def ingest_pdf(file: UploadFile = File(...)):
     try:
         from io import BytesIO
         reader = PdfReader(BytesIO(data))
-        full = "\n".join((p.extract_text() or "") for p in reader.pages)
+        pages = []
+        for i, p in enumerate(reader.pages):
+            txt = p.extract_text() or ""
+            pages.append(txt)
+        full = "\n".join(pages)
         qa = naive_qgen(full, max_q=10)
         return {"count": len(qa), "qa": qa}
     except Exception as e:
         raise HTTPException(500, f"PDF parse error: {e}")
 
-# ---------- Gemini client ----------
+# =====================================================================
+# ---------------- Socratic Sidekick (topic-adaptive questions) -------
+# =====================================================================
+
+# Minimal add-on: generate 5 tailored questions for any topic.
+# Endpoints:
+#   POST /socratic/start { "topic": "Bayes' theorem" }
+#     -> { "session_id": "...", "question": "<Q1>", "total": 5 }
+#   POST /socratic/reply { "session_id": "...", "answer": "..." }
+#     -> either { "done": False, "question": "<next Q>" }
+#        or     { "done": True }  # (no synthesis here by design)
+
+import os, json, uuid
+
+from pydantic import BaseModel
+
+class StartSidekickIn(BaseModel):
+    topic: str
+
+class ReplySidekickIn(BaseModel):
+    session_id: str
+    answer: str
+
+# Try Gemini for topic-specific questions, else fallback templates
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 try:
     from google.genai import Client
-    genai_client = Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
+    _genai = Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
 except Exception:
-    genai_client = None
+    _genai = None
 
-# In-memory session store: {session_id: {"topic": str, "q_index": int, "qa": list[dict]}}
-SOCRATIC_SESSIONS: Dict[str, Dict] = {}
-
-SOCRATIC_QUESTIONS = [
-    "What would you like to learn today? Give a one-sentence topic.",
-    "Who is the audience for your explanation (your future self, a classmate, a beginner)?",
-    "State the core idea in your own words in 3–5 sentences.",
-    "Give a concrete example or mini case where this idea applies.",
-    "What is a common misconception or pitfall, and how would you correct it?"
+DEFAULT_TEMPLATES = [
+    "In one sentence, what about **{topic}** do you want to understand right now?",
+    "Who is the audience for your explanation of **{topic}** (future you, a classmate, a beginner)?",
+    "State the core idea of **{topic}** in your own words (3–5 sentences).",
+    "Give a concrete example or mini case where **{topic}** applies.",
+    "What is a common misconception about **{topic}**, and how would you correct it?"
 ]
 
-def synthesize_with_gemini(topic: str, qa_pairs: List[Dict[str, str]]) -> str:
-    """Format the 5 answers into a clean Feynman-style note using Gemini (if available)."""
-    if not genai_client:
-        # Fallback: simple local formatter
-        lines = [f"# {topic}\n"]
-        for i, (q, a) in enumerate([(SOCRATIC_QUESTIONS[i], x["a"]) for i, x in enumerate(qa_pairs)], 1):
-            lines.append(f"## {i}. {q}\n{a}\n")
-        lines.append("\n**TL;DR:** Teach the idea in one or two lines.")
-        return "\n".join(lines)
+def generate_socratic_questions(topic: str) -> List[str]:
+    topic = (topic or "").strip()
+    # If Gemini is available, ask it for 5 short, topic-tailored questions.
+    if _genai and topic:
+        try:
+            prompt = (
+                "Generate 5 short Socratic questions that guide a learner to explain the topic themselves.\n"
+                "Cover: (1) scope/intent, (2) audience/context, (3) core idea in own words, "
+                "(4) concrete example, (5) common misconception & correction.\n"
+                "Be topic-specific, simple, and non-leading. Output JSON only as an array of strings.\n"
+                f'Topic: "{topic}"'
+            )
+            resp = _genai.models.generate_content(
+                model="gemini-1.5-flash",
+                contents=[{"role":"user","parts":[{"text":prompt}]}]
+            )
+            raw = (getattr(resp, "text", "") or "").strip()
+            if raw.startswith("```"):
+                raw = raw.strip("`")
+                if raw.startswith("json"):
+                    raw = raw[4:].strip()
+            data = json.loads(raw)
+            qs = [str(x).strip() for x in data if str(x).strip()]
+            if len(qs) >= 5:
+                return qs[:5]
+        except Exception:
+            pass
+    # Fallback: templates with {topic}
+    return [q.format(topic=topic or "your topic") for q in DEFAULT_TEMPLATES]
 
-    parts = [
-        "Turn the following Q&A into a clean, concise Feynman-style note with:\n"
-        "- a clear title\n- short intro\n- bullet points for core idea\n- one worked example\n"
-        "- a 'Common Pitfall' note\n- a short TL;DR.\nKeep it simple and well-formatted Markdown."
-    ]
-    for i, qa in enumerate(qa_pairs):
-        parts.append(f"Q{i+1}: {SOCRATIC_QUESTIONS[i]}\nA{i+1}: {qa['a']}")
-    prompt = "\n\n".join(parts)
-
-    resp = genai_client.models.generate_content(
-        model="gemini-1.5-flash",
-        contents=[{"role":"user","parts":[{"text":f"Topic: {topic}\n{prompt}"}]}]
-    )
-    text = getattr(resp, "text", None) or (resp.candidates[0].content.parts[0].text if getattr(resp, "candidates", None) else None)
-    return text or "Could not generate content. Please ensure GEMINI_API_KEY is set."
-
-# ---------- Socratic Sidekick routes ----------
-import uuid
+# In-memory session store:
+# { session_id: { "topic": str, "q_index": int, "questions": [str] } }
+SOCRATIC_SESSIONS: Dict[str, Dict] = {}
 
 @app.post("/socratic/start")
 def socratic_start(payload: StartSidekickIn):
     sid = str(uuid.uuid4())
-    SOCRATIC_SESSIONS[sid] = {"topic": payload.topic.strip(), "q_index": 0, "qa": []}
-    return {"session_id": sid, "question": SOCRATIC_QUESTIONS[0]}
+    qs = generate_socratic_questions(payload.topic)
+    SOCRATIC_SESSIONS[sid] = {"topic": payload.topic.strip(), "q_index": 0, "questions": qs}
+    return {"session_id": sid, "question": qs[0], "total": len(qs)}
 
 @app.post("/socratic/reply")
 def socratic_reply(payload: ReplySidekickIn):
@@ -221,30 +258,13 @@ def socratic_reply(payload: ReplySidekickIn):
     if not sess:
         raise HTTPException(404, "Session not found")
     qi = sess["q_index"]
-    if qi >= len(SOCRATIC_QUESTIONS):
-        raise HTTPException(400, "Session already complete")
+    qs = sess["questions"]
+    if qi >= len(qs):
+        return {"done": True}  # already finished
 
-    # store answer
-    sess["qa"].append({"q": SOCRATIC_QUESTIONS[qi], "a": payload.answer.strip()})
+    # advance to next question
     sess["q_index"] += 1
-
-    # next or synthesize
-    if sess["q_index"] < len(SOCRATIC_QUESTIONS):
-        return {"done": False, "question": SOCRATIC_QUESTIONS[sess["q_index"]]}
+    if sess["q_index"] < len(qs):
+        return {"done": False, "question": qs[sess["q_index"]]}
     else:
-        content = synthesize_with_gemini(sess["topic"], sess["qa"])
-        title = sess["topic"] or "My Learning Note"
-        return {"done": True, "title": title, "content": content}
-
-# ---------- Posts (blog) ----------
-@app.get("/posts", response_model=List[BlogPost])
-def list_posts():
-    with Session(engine) as sess:
-        return sess.exec(select(BlogPost).order_by(BlogPost.created_at.desc())).all()
-
-@app.post("/posts", response_model=BlogPost)
-def create_post(p: PostIn):
-    with Session(engine) as sess:
-        bp = BlogPost(title=p.title.strip() or "Untitled", content=p.content.strip())
-        sess.add(bp); sess.commit(); sess.refresh(bp)
-        return bp
+        return {"done": True}
