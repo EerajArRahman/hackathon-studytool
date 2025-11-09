@@ -15,6 +15,8 @@
       <select id="deckSelect"></select>
       <input id="tagFilter" placeholder="tag filter (optional)" />
       <button id="loadNextBtn">Review next</button>
+      <button id="openSidekickBtn" class="ghost">Socratic Sidekick</button>
+
     </div>
   </header>
 
@@ -62,6 +64,36 @@
       </table>
     </section>
   </main>
+  <section class="pane wide" id="sidekickPane" style="display:none">
+  <h2>Socratic Sidekick</h2>
+  <div class="grid" style="grid-template-columns: 1fr 1fr;">
+    <!-- Left: Output editor + Post -->
+    <div class="pane" style="background:#0f172a">
+      <h3>Draft (editable)</h3>
+      <input id="sidekickTitle" placeholder="Title" style="width:100%; margin-bottom:8px;" />
+      <textarea id="sidekickOutput" placeholder="Your formatted note will appear here..." style="min-height:280px"></textarea>
+      <div class="row" style="margin-top:8px">
+        <button id="postNoteBtn" class="success">Post</button>
+      </div>
+      <h3 style="margin-top:16px">Posts</h3>
+      <div id="postsList"></div>
+    </div>
+
+    <!-- Right: Chat with Gemini -->
+    <div class="pane">
+      <h3>Chat</h3>
+      <div class="row">
+        <input id="sidekickTopic" placeholder="What would you like to learn?" style="flex:1" />
+        <button id="startSidekickBtn">Start</button>
+      </div>
+      <div id="chatBox" class="box" style="min-height:260px; overflow:auto"></div>
+      <div class="row" style="margin-top:8px">
+        <input id="chatInput" placeholder="Type your answer..." style="flex:1" />
+        <button id="chatSendBtn">Send</button>
+      </div>
+    </div>
+  </div>
+</section>
 
   <script src="app.js"></script>
 </body>

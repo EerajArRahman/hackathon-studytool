@@ -161,3 +161,78 @@ $("ingestBtn").onclick = ingestPdf;
 deckSelect.onchange = () => { refreshCards(); refreshStats(); };
 
 window.addEventListener("DOMContentLoaded", refreshDecks);
+
+
+
+
+let SOC_SESSION = null;
+
+$("openSidekickBtn").onclick = () => {
+  const pane = $("sidekickPane");
+  pane.style.display = pane.style.display === "none" ? "block" : "none";
+  if (pane.style.display === "block") refreshPosts();
+};
+
+async function startSidekick() {
+  const topic = $("sidekickTopic").value.trim();
+  if (!topic) return;
+  const res = await api("/socratic/start", {
+    method:"POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ topic })
+  });
+  SOC_SESSION = res.session_id;
+  $("sidekickTitle").value = topic;
+  $("sidekickOutput").value = "";
+  $("chatBox").innerHTML = `<div><b>Gemini:</b> ${res.question}</div>`;
+  $("chatInput").focus();
+}
+
+async function sendSidekickAnswer() {
+  if (!SOC_SESSION) return;
+  const ans = $("chatInput").value.trim();
+  if (!ans) return;
+  $("chatBox").innerHTML += `<div><b>You:</b> ${ans}</div>`;
+  $("chatInput").value = "";
+  const res = await api("/socratic/reply", {
+    method:"POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ session_id: SOC_SESSION, answer: ans })
+  });
+  if (!res.done) {
+    $("chatBox").innerHTML += `<div><b>Gemini:</b> ${res.question}</div>`;
+  } else {
+    $("sidekickOutput").value = res.content;
+    $("sidekickTitle").value = res.title || $("sidekickTitle").value || "My Learning Note";
+    $("chatBox").innerHTML += `<div><b>Gemini:</b> Great work! I generated a draft on the left — feel free to edit, then click Post.</div>`;
+  }
+  $("chatBox").scrollTop = $("chatBox").scrollHeight;
+}
+
+async function postNote() {
+  const title = $("sidekickTitle").value.trim() || "My Learning Note";
+  const content = $("sidekickOutput").value.trim();
+  if (!content) return;
+  await api("/posts", {
+    method:"POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ title, content })
+  });
+  await refreshPosts();
+}
+
+async function refreshPosts() {
+  const posts = await api("/posts");
+  const box = $("postsList");
+  box.innerHTML = posts.map(p => `
+    <div class="box" style="margin-bottom:8px">
+      <b>${p.title}</b> <small>(${new Date(p.created_at + "Z").toLocaleString()})</small>
+      <div style="white-space:pre-wrap; margin-top:6px">${p.content}</div>
+    </div>
+  `).join("");
+}
+
+$("startSidekickBtn").onclick = startSidekick;
+$("chatSendBtn").onclick = sendSidekickAnswer;
+$("postNoteBtn").onclick = postNote;
+$("chatInput").addEventListener("keydown", e => { if (e.key === "Enter") sendSidekickAnswer(); });

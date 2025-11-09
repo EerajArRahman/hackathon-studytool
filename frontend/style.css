@@ -23,3 +23,7 @@ th, td { border-bottom:1px solid #1f2937; padding:8px; vertical-align: top; }
 tr.hard { background: rgba(239,68,68,0.10); }
 tr.medium { background: rgba(245,158,11,0.10); }
 tr.easy { background: rgba(16,185,129,0.08); }
+
+
+#sidekickPane .pane { background:#111827; }
+#chatBox div { margin:6px 0; }
